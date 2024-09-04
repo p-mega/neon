@@ -33,6 +33,7 @@ use nix::sys::signal::{kill, Signal};
 use remote_storage::{DownloadError, RemotePath};
 
 use crate::checker::create_availability_check_data;
+use crate::installed_extensions::log_installed_extensions;
 use crate::logger::inlinify;
 use crate::pg_helpers::*;
 use crate::spec::*;
@@ -789,6 +790,9 @@ impl ComputeNode {
                 let mut client = Client::connect(connstr.as_str(), NoTls)?;
                 handle_neon_extension_upgrade(&mut client)
                     .context("handle_neon_extension_upgrade")?;
+
+                // Check if there are any extensions installed and log them
+                log_installed_extensions(connstr).context("log_installed_extensions")?;
                 Ok::<_, anyhow::Error>(())
             };
             if let Err(err) = func() {
@@ -1392,6 +1396,28 @@ LIMIT 100",
             remote_ext_metrics.total_ext_download_size += download_size;
         }
         Ok(remote_ext_metrics)
+    }
+
+    // Gather info about installed extensions
+    pub fn get_installed_extensions(&self) -> Result<()> {
+        let connstr = self.connstr.clone();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to create runtime");
+        let result = rt
+            .block_on(crate::installed_extensions::get_installed_extensions(
+                connstr,
+            ))
+            .expect("failed to get installed extensions");
+
+        info!(
+            "{}",
+            serde_json::to_string(&result).expect("failed to serialize extensions list")
+        );
+
+        Ok(())
     }
 }
 

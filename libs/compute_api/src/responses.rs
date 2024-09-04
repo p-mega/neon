@@ -138,3 +138,16 @@ pub enum ControlPlaneComputeStatus {
     // should be able to start with provided spec.
     Attached,
 }
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct InstalledExtension {
+    pub extname: String,
+    pub lowest_version: String,
+    pub highest_version: String,
+    pub n_databases: u32, // Number of databases using this extension
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct InstalledExtenstions {
+    pub extensions: Vec<InstalledExtension>,
+}
