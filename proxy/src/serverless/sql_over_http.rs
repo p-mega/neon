@@ -8,7 +8,6 @@ use futures::future::Either;
 use futures::StreamExt;
 use futures::TryFutureExt;
 use http::header::AUTHORIZATION;
-use http_body_util::BodyExt;
 use http_body_util::Full;
 use hyper1::body::Body;
 use hyper1::body::Incoming;
@@ -46,6 +45,7 @@ use crate::context::RequestMonitoring;
 use crate::error::ErrorKind;
 use crate::error::ReportableError;
 use crate::error::UserFacingError;
+use crate::http::parse_json_body_with_limit;
 use crate::metrics::HttpDirection;
 use crate::metrics::Metrics;
 use crate::proxy::run_until_cancelled;
@@ -343,7 +343,7 @@ pub(crate) async fn handle(
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum SqlOverHttpError {
     #[error("{0}")]
-    ReadPayload(#[from] ReadPayloadError),
+    ReadPayload(ReadPayloadError),
     #[error("{0}")]
     ConnectCompute(#[from] HttpConnError),
     #[error("{0}")]
@@ -397,9 +397,9 @@ impl UserFacingError for SqlOverHttpError {
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ReadPayloadError {
     #[error("could not read the HTTP request body: {0}")]
-    Read(#[from] hyper1::Error),
+    Read(hyper1::Error),
     #[error("could not parse the HTTP request body: {0}")]
-    Parse(#[from] serde_json::Error),
+    Parse(serde_json::Error),
 }
 
 impl ReportableError for ReadPayloadError {
@@ -407,6 +407,18 @@ impl ReportableError for ReadPayloadError {
         match self {
             ReadPayloadError::Read(_) => ErrorKind::ClientDisconnect,
             ReadPayloadError::Parse(_) => ErrorKind::User,
+        }
+    }
+}
+
+impl From<crate::http::ReadPayloadError<hyper1::Error>> for SqlOverHttpError {
+    fn from(value: crate::http::ReadPayloadError<hyper1::Error>) -> Self {
+        match value {
+            crate::http::ReadPayloadError::Read(e) => Self::ReadPayload(ReadPayloadError::Read(e)),
+            crate::http::ReadPayloadError::Parse(e) => {
+                Self::ReadPayload(ReadPayloadError::Parse(e))
+            }
+            crate::http::ReadPayloadError::LengthExceeded(_) => Self::RequestTooLarge,
         }
     }
 }
@@ -533,15 +545,11 @@ async fn handle_inner(
         return Err(SqlOverHttpError::RequestTooLarge);
     }
 
-    let fetch_and_process_request = Box::pin(
-        async {
-            let body = request.into_body().collect().await?.to_bytes();
-            info!(length = body.len(), "request payload read");
-            let payload: Payload = serde_json::from_slice(&body)?;
-            Ok::<Payload, ReadPayloadError>(payload) // Adjust error type accordingly
-        }
-        .map_err(SqlOverHttpError::from),
-    );
+    let fetch_and_process_request = Box::pin(async {
+        let payload =
+            parse_json_body_with_limit(request.into_body(), MAX_REQUEST_SIZE as usize).await?;
+        Ok::<Payload, SqlOverHttpError>(payload) // Adjust error type accordingly
+    });
 
     let authenticate_and_connect = Box::pin(
         async {
