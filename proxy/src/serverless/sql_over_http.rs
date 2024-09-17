@@ -1,3 +1,4 @@
+use std::marker::PhantomData;
 use std::pin::pin;
 use std::sync::Arc;
 
@@ -547,7 +548,8 @@ async fn handle_inner(
 
     let fetch_and_process_request = Box::pin(async {
         let payload =
-            parse_json_body_with_limit(request.into_body(), MAX_REQUEST_SIZE as usize).await?;
+            parse_json_body_with_limit(PhantomData, request.into_body(), MAX_REQUEST_SIZE as usize)
+                .await?;
         Ok::<Payload, SqlOverHttpError>(payload) // Adjust error type accordingly
     });
 
