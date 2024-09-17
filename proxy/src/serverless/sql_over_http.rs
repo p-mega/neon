@@ -51,6 +51,8 @@ use crate::metrics::HttpDirection;
 use crate::metrics::Metrics;
 use crate::proxy::run_until_cancelled;
 use crate::proxy::NeonOptions;
+use crate::serverless::json::Arena;
+use crate::serverless::json::SerdeArena;
 use crate::usage_metrics::MetricCounterRecorder;
 use crate::DbName;
 use crate::RoleName;
@@ -63,10 +65,11 @@ use super::conn_pool::ConnInfo;
 use super::http_util::json_response;
 use super::json::pg_text_row_to_json;
 use super::json::JsonConversionError;
+use super::json::Slice;
 
 pub(crate) struct QueryData {
-    pub(crate) query: String,
-    pub(crate) params: Vec<Option<String>>,
+    pub(crate) query: Slice,
+    pub(crate) params: Slice,
     pub(crate) array_mode: Option<bool>,
 }
 
@@ -546,9 +549,15 @@ async fn handle_inner(
         return Err(SqlOverHttpError::RequestTooLarge);
     }
 
+    let mut arena = Arena::default();
+
     let fetch_and_process_request = Box::pin(async {
+        let seed = SerdeArena {
+            arena: &mut arena,
+            _t: PhantomData::<Payload>,
+        };
         let payload =
-            parse_json_body_with_limit(PhantomData, request.into_body(), MAX_REQUEST_SIZE as usize)
+            parse_json_body_with_limit(seed, request.into_body(), MAX_REQUEST_SIZE as usize)
                 .await?;
         Ok::<Payload, SqlOverHttpError>(payload) // Adjust error type accordingly
     });
@@ -604,7 +613,10 @@ async fn handle_inner(
 
     // Now execute the query and return the result.
     let json_output = match payload {
-        Payload::Single(stmt) => stmt.process(cancel, &mut client, parsed_headers).await?,
+        Payload::Single(stmt) => {
+            stmt.process(&arena, cancel, &mut client, parsed_headers)
+                .await?
+        }
         Payload::Batch(statements) => {
             if parsed_headers.txn_read_only {
                 response = response.header(TXN_READ_ONLY.clone(), &HEADER_VALUE_TRUE);
@@ -620,7 +632,7 @@ async fn handle_inner(
             }
 
             statements
-                .process(cancel, &mut client, parsed_headers)
+                .process(&arena, cancel, &mut client, parsed_headers)
                 .await?
         }
     };
@@ -648,6 +660,7 @@ async fn handle_inner(
 impl QueryData {
     async fn process(
         self,
+        arena: &Arena,
         cancel: CancellationToken,
         client: &mut Client<tokio_postgres::Client>,
         parsed_headers: HttpHeaders,
@@ -656,7 +669,7 @@ impl QueryData {
         let cancel_token = inner.cancel_token();
 
         let res = match select(
-            pin!(query_to_json(&*inner, self, &mut 0, parsed_headers)),
+            pin!(query_to_json(arena, &*inner, self, &mut 0, parsed_headers)),
             pin!(cancel.cancelled()),
         )
         .await
@@ -719,6 +732,7 @@ impl QueryData {
 impl BatchQueryData {
     async fn process(
         self,
+        arena: &Arena,
         cancel: CancellationToken,
         client: &mut Client<tokio_postgres::Client>,
         parsed_headers: HttpHeaders,
@@ -743,44 +757,52 @@ impl BatchQueryData {
             discard.discard();
         })?;
 
-        let json_output =
-            match query_batch(cancel.child_token(), &transaction, self, parsed_headers).await {
-                Ok(json_output) => {
-                    info!("commit");
-                    let status = transaction.commit().await.inspect_err(|_| {
-                        // if we cannot commit - for now don't return connection to pool
-                        // TODO: get a query status from the error
-                        discard.discard();
-                    })?;
-                    discard.check_idle(status);
-                    json_output
-                }
-                Err(SqlOverHttpError::Cancelled(_)) => {
-                    if let Err(err) = cancel_token.cancel_query(NoTls).await {
-                        tracing::error!(?err, "could not cancel query");
-                    }
-                    // TODO: after cancelling, wait to see if we can get a status. maybe the connection is still safe.
+        let json_output = match query_batch(
+            arena,
+            cancel.child_token(),
+            &transaction,
+            self,
+            parsed_headers,
+        )
+        .await
+        {
+            Ok(json_output) => {
+                info!("commit");
+                let status = transaction.commit().await.inspect_err(|_| {
+                    // if we cannot commit - for now don't return connection to pool
+                    // TODO: get a query status from the error
                     discard.discard();
+                })?;
+                discard.check_idle(status);
+                json_output
+            }
+            Err(SqlOverHttpError::Cancelled(_)) => {
+                if let Err(err) = cancel_token.cancel_query(NoTls).await {
+                    tracing::error!(?err, "could not cancel query");
+                }
+                // TODO: after cancelling, wait to see if we can get a status. maybe the connection is still safe.
+                discard.discard();
 
-                    return Err(SqlOverHttpError::Cancelled(SqlOverHttpCancel::Postgres));
-                }
-                Err(err) => {
-                    info!("rollback");
-                    let status = transaction.rollback().await.inspect_err(|_| {
-                        // if we cannot rollback - for now don't return connection to pool
-                        // TODO: get a query status from the error
-                        discard.discard();
-                    })?;
-                    discard.check_idle(status);
-                    return Err(err);
-                }
-            };
+                return Err(SqlOverHttpError::Cancelled(SqlOverHttpCancel::Postgres));
+            }
+            Err(err) => {
+                info!("rollback");
+                let status = transaction.rollback().await.inspect_err(|_| {
+                    // if we cannot rollback - for now don't return connection to pool
+                    // TODO: get a query status from the error
+                    discard.discard();
+                })?;
+                discard.check_idle(status);
+                return Err(err);
+            }
+        };
 
         Ok(json_output)
     }
 }
 
 async fn query_batch(
+    arena: &Arena,
     cancel: CancellationToken,
     transaction: &Transaction<'_>,
     queries: BatchQueryData,
@@ -790,6 +812,7 @@ async fn query_batch(
     let mut current_size = 0;
     for stmt in queries.queries {
         let query = pin!(query_to_json(
+            arena,
             transaction,
             stmt,
             &mut current_size,
@@ -818,14 +841,21 @@ async fn query_batch(
 }
 
 async fn query_to_json<T: GenericClient>(
+    arena: &Arena,
     client: &T,
     data: QueryData,
     current_size: &mut usize,
     parsed_headers: HttpHeaders,
 ) -> Result<(ReadyForQueryStatus, impl Serialize), SqlOverHttpError> {
     info!("executing query");
-    let query_params = data.params;
-    let mut row_stream = std::pin::pin!(client.query_raw_txt(&data.query, query_params).await?);
+
+    let query_params = arena.params_arena[data.params.into_range()]
+        .iter()
+        .map(|p| p.map(|p| &arena.str_arena[p.into_range()]));
+
+    let query = &arena.str_arena[data.query.into_range()];
+
+    let mut row_stream = std::pin::pin!(client.query_raw_txt(query, query_params).await?);
     info!("finished executing query");
 
     // Manually drain the stream into a vector to leave row_stream hanging
