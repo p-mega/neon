@@ -13,7 +13,6 @@ use std::thread;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use camino::Utf8Path;
 use chrono::{DateTime, Utc};
 use futures::future::join_all;
 use futures::stream::FuturesUnordered;
@@ -947,7 +946,7 @@ impl ComputeNode {
             let local_proxy = local_proxy.clone();
             local_proxy_handle = Some(thread::spawn(move || -> Result<()> {
                 write_local_proxy_conf("/etc/localproxy/config.json".as_ref(), &local_proxy)?;
-                notify_local_proxy(Utf8Path::new("/etc/localproxy/pid"))?;
+                notify_local_proxy("/etc/localproxy/pid".as_ref())?;
 
                 Ok(())
             }));
@@ -1054,8 +1053,8 @@ impl ComputeNode {
             // so that we don't block the main thread that starts Postgres.
             let local_proxy = local_proxy.clone();
             let _handle = thread::spawn(move || -> Result<()> {
-                write_local_proxy_conf("/etc/localproxy.json".as_ref(), &local_proxy)?;
-                notify_local_proxy("/etc/localproxy.pid".as_ref())?;
+                write_local_proxy_conf("/etc/localproxy/config.json".as_ref(), &local_proxy)?;
+                notify_local_proxy("/etc/localproxy/pid".as_ref())?;
 
                 Ok(())
             });
