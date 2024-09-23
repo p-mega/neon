@@ -119,7 +119,7 @@ impl PoolingBackend {
                 "JWT login over web auth proxy is not supported",
             )),
             crate::auth::Backend::Local(cache) => {
-                cache
+                let keys = cache
                     .jwks_cache
                     .check_jwt(
                         ctx,
@@ -132,7 +132,7 @@ impl PoolingBackend {
                     .map_err(|e| AuthError::auth_failed(e.to_string()))?;
                 Ok(ComputeCredentials {
                     info: user_info.clone(),
-                    keys: crate::auth::backend::ComputeCredentialKeys::None,
+                    keys,
                 })
             }
         }
