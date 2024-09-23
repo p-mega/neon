@@ -131,7 +131,7 @@ extern void inc_page_cache_read_wait(uint64 latency);
 extern void inc_page_cache_write_wait(uint64 latency);
 
 extern Size NeonPerfCountersShmemSize(void);
-extern bool NeonPerfCountersShmemInit(void);
+extern void NeonPerfCountersShmemInit(void);
 
 
 #endif							/* NEON_PERF_COUNTERS_H */

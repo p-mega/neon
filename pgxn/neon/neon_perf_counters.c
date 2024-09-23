@@ -32,7 +32,7 @@ NeonPerfCountersShmemSize(void)
 	return size;
 }
 
-bool
+void
 NeonPerfCountersShmemInit(void)
 {
 	bool		found;
@@ -43,6 +43,7 @@ NeonPerfCountersShmemInit(void)
 								 sizeof(neon_per_backend_counters)),
 						&found);
 	Assert(found == IsUnderPostmaster);
+
 	if (!found)
 	{
 		/* shared memory is initialized to zeros, so nothing to do here */
