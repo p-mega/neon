@@ -1,7 +1,4 @@
-use std::{
-    sync::{atomic::Ordering, Arc},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use tokio_postgres::types::ToSql;
@@ -224,6 +221,8 @@ pub(crate) enum HttpConnError {
     ConnectionClosedAbruptly(#[from] tokio::sync::watch::error::SendError<uuid::Uuid>),
     #[error("could not connection to compute")]
     ConnectionError(#[from] tokio_postgres::Error),
+    #[error("could not parse JWT payload")]
+    JwtPayloadError(serde_json::Error),
 
     #[error("could not get auth info")]
     GetAuthInfo(#[from] GetAuthInfoError),
@@ -240,6 +239,7 @@ impl ReportableError for HttpConnError {
         match self {
             HttpConnError::ConnectionClosedAbruptly(_) => ErrorKind::Compute,
             HttpConnError::ConnectionError(p) => p.get_error_kind(),
+            HttpConnError::JwtPayloadError(_) => ErrorKind::User,
             HttpConnError::GetAuthInfo(a) => a.get_error_kind(),
             HttpConnError::AuthError(a) => a.get_error_kind(),
             HttpConnError::WakeCompute(w) => w.get_error_kind(),
@@ -253,6 +253,7 @@ impl UserFacingError for HttpConnError {
         match self {
             HttpConnError::ConnectionClosedAbruptly(_) => self.to_string(),
             HttpConnError::ConnectionError(p) => p.to_string(),
+            HttpConnError::JwtPayloadError(p) => p.to_string(),
             HttpConnError::GetAuthInfo(c) => c.to_string_client(),
             HttpConnError::AuthError(c) => c.to_string_client(),
             HttpConnError::WakeCompute(c) => c.to_string_client(),
@@ -268,6 +269,7 @@ impl CouldRetry for HttpConnError {
         match self {
             HttpConnError::ConnectionError(e) => e.could_retry(),
             HttpConnError::ConnectionClosedAbruptly(_) => false,
+            HttpConnError::JwtPayloadError(_) => false,
             HttpConnError::GetAuthInfo(_) => false,
             HttpConnError::AuthError(_) => false,
             HttpConnError::WakeCompute(_) => false,
