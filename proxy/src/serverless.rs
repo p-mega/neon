@@ -7,6 +7,7 @@ pub mod cancel_set;
 mod conn_pool;
 mod http_util;
 mod json;
+mod local_conn_pool;
 mod sql_over_http;
 mod websocket;
 
