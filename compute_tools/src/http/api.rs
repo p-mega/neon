@@ -185,7 +185,7 @@ async fn routes(req: Request<Body>, compute: &Arc<ComputeNode>) -> Response<Body
             match res {
                 Ok(res) => render_json(Body::from(serde_json::to_string(&res).unwrap())),
                 Err(_) => render_json_error(
-                    "can't get list of installed extension",
+                    format!("could not get list of installed extensions: {}", e),
                     StatusCode::INTERNAL_SERVER_ERROR,
                 ),
             }
