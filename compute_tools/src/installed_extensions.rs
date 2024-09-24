@@ -119,7 +119,7 @@ pub fn log_installed_extensions(connstr: Url) -> Result<()> {
 
     info!(
         "[INSTALLED_EXTENSIONS]: {}",
-        serde_json::to_string(&result).expect("failed to serialize extensions list")
+        serde_json::to_string(&result).with_context(|| "failed to serialize extensions list")?
     );
     Ok(())
 }
