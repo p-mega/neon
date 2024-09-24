@@ -2,13 +2,13 @@ use compute_api::responses::{InstalledExtension, InstalledExtenstions};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;
-use std::str::FromStr;
 use url::Url;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use postgres::{Client, NoTls};
 use tokio::task;
 use tracing::{debug, info};
+use semver::Version;
 
 /// We don't reuse get_existing_dbs() just for code clarity
 /// and to make database listing query here more explicit.
@@ -66,14 +66,10 @@ pub async fn get_installed_extensions(connstr: Url) -> Result<InstalledExtenstio
                 extensions_map
                     .entry(extname.to_string())
                     .and_modify(|e| {
-                        // convert version to SemanticVersion
-                        let version_sem =
-                            SemanticVersion::from_str(&version).expect("failed to parse version");
-                        // use SemanticVersion to compare versions
-                        let lowest_version_sem = SemanticVersion::from_str(&e.lowest_version)
-                            .expect("failed to parse lowest version");
-                        let highest_version_sem = SemanticVersion::from_str(&e.highest_version)
-                            .expect("failed to parse highest version");
+
+                        let version_sem = SemanticVersion::from_str_safe(&version);
+                        let lowest_version_sem = SemanticVersion::from_str_safe(&e.lowest_version);
+                        let highest_version_sem = SemanticVersion::from_str_safe(&e.highest_version);
 
                         debug!(
                             "extname: {}, version: {}, lowest: {}, highest: {}",
@@ -115,11 +111,11 @@ pub fn log_installed_extensions(connstr: Url) -> Result<()> {
         .expect("failed to create runtime");
     let result = rt
         .block_on(get_installed_extensions(connstr))
-        .expect("failed to get installed extensions");
+        .map_err(|e| anyhow!("failed to get installed extensions: {:?}", e))?;
 
     info!(
         "[INSTALLED_EXTENSIONS]: {}",
-        serde_json::to_string(&result).with_context(|| "failed to serialize extensions list")?
+        serde_json::to_string(&result).map_err(|e| anyhow!("failed to deserialize installed extensions: {:?}", e))?
     );
     Ok(())
 }
@@ -128,77 +124,59 @@ pub fn log_installed_extensions(connstr: Url) -> Result<()> {
 //
 // Most of the postgres extensions use 2 part versioning (major.minor)
 // Some extensions use 3 part versioning (major.minor.patch)
-//
-
-#[derive(Debug, Clone, Copy)]
+// Postgres does not enforce any versioning scheme, so we also add
+// fallback to raw string comparison.
+#[derive(Debug, Clone)]
 struct SemanticVersion {
-    major: u32,
-    minor: u32,
-    patch: Option<u32>, // Make patch optional
+    semver: Option<Version>,
+    raw: String,
 }
 
 impl SemanticVersion {
     // Helper method to compare versions
+    // If both versions are semver, compare them
+    // Otherwise fallback to raw string comparison, that's the best we can do
     fn compare(&self, other: &Self) -> Ordering {
-        self.major
-            .cmp(&other.major)
-            .then_with(|| self.minor.cmp(&other.minor))
-            .then_with(|| self.patch.unwrap_or(0).cmp(&other.patch.unwrap_or(0)))
-    }
-}
-
-impl FromStr for SemanticVersion {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parts: Vec<&str> = s.split('.').collect();
-        if parts.is_empty() || parts.len() > 3 {
-            return Err("Version must have 1 to 3 parts separated by periods".to_string());
+        if self.semver.is_some() && other.semver.is_some() {
+            self.semver.cmp(&other.semver)
+        } else {
+            self.raw.cmp(&other.raw)
         }
-
-        let major = parts
-            .first()
-            .ok_or("Missing major version")?
-            .parse::<u32>()
-            .map_err(|_| "Invalid major version".to_string())?;
-        let minor = parts
-            .get(1)
-            .ok_or("Missing minor version")?
-            .parse::<u32>()
-            .map_err(|_| "Invalid minor version".to_string())?;
-        let patch = parts
-            .get(2)
-            .map(|&p| {
-                p.parse::<u32>()
-                    .map_err(|_| "Invalid patch version".to_string())
-            })
-            .transpose()?;
-
-        Ok(SemanticVersion {
-            major,
-            minor,
-            patch,
-        })
+    }
+    fn from_str_safe(s: &str) -> SemanticVersion {
+        SemanticVersion {
+            semver: Version::parse(s).ok(),
+            raw: s.to_string(),
+        }
     }
 }
 
 impl PartialEq for SemanticVersion {
     fn eq(&self, other: &Self) -> bool {
-        self.compare(other) == Ordering::Equal
+        if self.semver.is_some() && other.semver.is_some() {
+            self.semver == other.semver
+        } else {
+            self.raw == other.raw
+        }
     }
 }
 
 impl PartialOrd for SemanticVersion {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.compare(other))
+        if self.semver.is_some() && other.semver.is_some() {
+            self.semver.partial_cmp(&other.semver)
+        } else {
+            Some(self.compare(other))
+        }
     }
 }
 
 impl fmt::Display for SemanticVersion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.patch {
-            Some(patch) => write!(f, "{}.{}.{}", self.major, self.minor, patch),
-            None => write!(f, "{}.{}", self.major, self.minor),
+        if self.semver.is_some() {
+            write!(f, "{}", self.semver.as_ref().unwrap())
+        } else {
+            write!(f, "{}", self.raw)
         }
     }
 }
@@ -206,22 +184,28 @@ impl fmt::Display for SemanticVersion {
 #[cfg(test)]
 mod tests {
     use crate::installed_extensions::SemanticVersion;
-    use std::str::FromStr;
 
     #[test]
     fn test_semantic_version() {
-        let v1 = SemanticVersion::from_str("1.0").unwrap();
-        let v2 = SemanticVersion::from_str("1.0.0").unwrap();
-        let v3 = SemanticVersion::from_str("1.1").unwrap();
-        let v4 = SemanticVersion::from_str("2.0").unwrap();
-        let v5 = SemanticVersion::from_str("2.0.1").unwrap();
-        let v6 = SemanticVersion::from_str("2.1.1").unwrap();
+        let v1 = SemanticVersion::from_str_safe("1.0");
+        let v2 = SemanticVersion::from_str_safe("1.0.0");
+        let v3 = SemanticVersion::from_str_safe("1.1");
+        let v4 = SemanticVersion::from_str_safe("2.0");
+        let v5 = SemanticVersion::from_str_safe("2.0.1");
+        let v6 = SemanticVersion::from_str_safe("2.1.1");
+        // This shouldn't happen in real world
+        // but let's test that parsing and comparison
+        // can handle weird versions too.
+        let v7 = SemanticVersion::from_str_safe("2.1a");
+        let v8 = SemanticVersion::from_str_safe("2.1x");
 
         assert!(v1 < v3);
         assert!(v2 <= v3);
         assert!(v3 < v4);
-        assert!(v1 == v2);
         assert!(v5 > v4);
         assert!(v6 > v5);
+        assert!(v6 < v7);
+        assert!(v4 < v8);
+        assert!(v8 > v7);
     }
 }

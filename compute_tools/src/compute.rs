@@ -1398,27 +1398,6 @@ LIMIT 100",
         Ok(remote_ext_metrics)
     }
 
-    // Gather info about installed extensions
-    pub fn get_installed_extensions(&self) -> Result<()> {
-        let connstr = self.connstr.clone();
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("failed to create runtime");
-        let result = rt
-            .block_on(crate::installed_extensions::get_installed_extensions(
-                connstr,
-            ))
-            .expect("failed to get installed extensions");
-
-        info!(
-            "{}",
-            serde_json::to_string(&result).expect("failed to serialize extensions list")
-        );
-
-        Ok(())
-    }
 }
 
 pub fn forward_termination_signal() {

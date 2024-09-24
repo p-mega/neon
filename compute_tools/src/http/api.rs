@@ -184,8 +184,8 @@ async fn routes(req: Request<Body>, compute: &Arc<ComputeNode>) -> Response<Body
             let res = crate::installed_extensions::get_installed_extensions(connstr).await;
             match res {
                 Ok(res) => render_json(Body::from(serde_json::to_string(&res).unwrap())),
-                Err(_) => render_json_error(
-                    format!("could not get list of installed extensions: {}", e),
+                Err(e) => render_json_error(
+                    &format!("could not get list of installed extensions: {}", e),
                     StatusCode::INTERNAL_SERVER_ERROR,
                 ),
             }
