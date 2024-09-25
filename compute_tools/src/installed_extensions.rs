@@ -6,9 +6,9 @@ use url::Url;
 
 use anyhow::{anyhow, Result};
 use postgres::{Client, NoTls};
+use semver::Version;
 use tokio::task;
 use tracing::{debug, info};
-use semver::Version;
 
 /// We don't reuse get_existing_dbs() just for code clarity
 /// and to make database listing query here more explicit.
@@ -66,10 +66,10 @@ pub async fn get_installed_extensions(connstr: Url) -> Result<InstalledExtenstio
                 extensions_map
                     .entry(extname.to_string())
                     .and_modify(|e| {
-
                         let version_sem = SemanticVersion::from_str_safe(&version);
                         let lowest_version_sem = SemanticVersion::from_str_safe(&e.lowest_version);
-                        let highest_version_sem = SemanticVersion::from_str_safe(&e.highest_version);
+                        let highest_version_sem =
+                            SemanticVersion::from_str_safe(&e.highest_version);
 
                         debug!(
                             "extname: {}, version: {}, lowest: {}, highest: {}",
@@ -115,7 +115,8 @@ pub fn log_installed_extensions(connstr: Url) -> Result<()> {
 
     info!(
         "[INSTALLED_EXTENSIONS]: {}",
-        serde_json::to_string(&result).map_err(|e| anyhow!("failed to deserialize installed extensions: {:?}", e))?
+        serde_json::to_string(&result)
+            .map_err(|e| anyhow!("failed to deserialize installed extensions: {:?}", e))?
     );
     Ok(())
 }

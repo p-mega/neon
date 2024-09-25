@@ -1397,7 +1397,6 @@ LIMIT 100",
         }
         Ok(remote_ext_metrics)
     }
-
 }
 
 pub fn forward_termination_signal() {
