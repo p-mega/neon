@@ -1728,6 +1728,10 @@ async fn timeline_compact_handler(
     let state = get_state(&request);
 
     let mut flags = EnumSet::empty();
+
+    if Some(true) == parse_query_param::<_, bool>(&request, "force_l0_compaction")? {
+        flags |= CompactFlags::ForceL0Compaction;
+    }
     if Some(true) == parse_query_param::<_, bool>(&request, "force_repartition")? {
         flags |= CompactFlags::ForceRepartition;
     }
@@ -1774,6 +1778,9 @@ async fn timeline_checkpoint_handler(
     let state = get_state(&request);
 
     let mut flags = EnumSet::empty();
+    if Some(true) == parse_query_param::<_, bool>(&request, "force_l0_compaction")? {
+        flags |= CompactFlags::ForceL0Compaction;
+    }
     if Some(true) == parse_query_param::<_, bool>(&request, "force_repartition")? {
         flags |= CompactFlags::ForceRepartition;
     }
